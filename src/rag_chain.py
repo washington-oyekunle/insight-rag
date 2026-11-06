@@ -7,16 +7,17 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 
-from src.config import OLLAMA_MODEL, OLLAMA_BASE_URL, TEMPERATURE, TOP_K
+from src.config import OLLAMA_MODEL, OLLAMA_BASE_URL, TEMPERATURE
 
 
-SYSTEM_PROMPT = """You are a helpful assistant that answers questions based only on the provided context.
+SYSTEM_PROMPT = """You are a precise and helpful assistant that answers questions using only the provided context.
 
-Rules:
-- Use only the information in the context to answer.
-- If the context does not contain enough information, say "I don't have enough information in the documents to answer that."
-- Be concise but complete.
-- When possible, mention which document the information comes from.
+Guidelines:
+- Base your answer strictly on the context below. Do not use outside knowledge.
+- If the context is insufficient, reply: "I don't have enough information in the documents to answer that."
+- Prefer concise, well-structured answers.
+- When relevant, mention the source document name.
+- If multiple documents contain related information, synthesize them clearly.
 
 Context:
 {context}
@@ -24,7 +25,10 @@ Context:
 
 
 def format_docs(docs: list[Document]) -> str:
-    """Format retrieved documents into a single context string."""
+    """Format retrieved documents into a single context string with sources."""
+    if not docs:
+        return "No relevant context found."
+
     parts = []
     for i, doc in enumerate(docs, 1):
         source = doc.metadata.get("source", "unknown")
@@ -39,14 +43,15 @@ def get_llm(provider: str = "ollama", openai_api_key: Optional[str] = None):
     """
     if provider == "openai":
         from langchain_openai import ChatOpenAI
+
         return ChatOpenAI(
             model="gpt-4o-mini",
             temperature=TEMPERATURE,
             api_key=openai_api_key,
         )
     else:
-        # Default: Ollama (fully local)
         from langchain_community.chat_models import ChatOllama
+
         return ChatOllama(
             model=OLLAMA_MODEL,
             base_url=OLLAMA_BASE_URL,
@@ -55,7 +60,7 @@ def get_llm(provider: str = "ollama", openai_api_key: Optional[str] = None):
 
 
 def create_rag_chain(retriever, llm):
-    """Create a simple RAG chain: retrieve → format → prompt → LLM → parse."""
+    """Create a RAG chain: retrieve → format context → prompt → LLM → parse."""
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -78,5 +83,5 @@ def create_rag_chain(retriever, llm):
 
 
 def answer_question(chain, question: str) -> str:
-    """Run the chain and return the answer."""
+    """Run the chain and return the answer string."""
     return chain.invoke(question)

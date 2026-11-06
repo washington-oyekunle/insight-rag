@@ -7,7 +7,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from src.config import CHROMA_DIR, TOP_K
+from src.config import CHROMA_DIR
 from src.embeddings import get_embeddings
 
 
@@ -33,14 +33,10 @@ def add_documents(vectorstore: Chroma, documents: List[Document]) -> None:
         vectorstore.add_documents(documents)
 
 
-def get_retriever(vectorstore: Chroma, k: int = TOP_K):
-    """Return a retriever from the vector store."""
-    return vectorstore.as_retriever(search_kwargs={"k": k})
-
-
 def clear_vectorstore(persist_directory: str | Path = CHROMA_DIR) -> None:
     """Delete the persistent Chroma directory (use with care)."""
     import shutil
+
     path = Path(persist_directory)
     if path.exists():
         shutil.rmtree(path)

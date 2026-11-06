@@ -1,4 +1,4 @@
-"""InsightRAG — Streamlit UI"""
+"""InsightRAG — Streamlit UI with Hybrid Search"""
 
 import os
 from pathlib import Path
@@ -6,9 +6,10 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K
+from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS
 from src.document_loader import load_and_chunk
-from src.vectorstore import get_vectorstore, add_documents, get_retriever, clear_vectorstore
+from src.vectorstore import get_vectorstore, add_documents, clear_vectorstore
+from src.retriever import create_hybrid_retriever, retrieve_with_scores
 from src.rag_chain import get_llm, create_rag_chain, answer_question
 from src.evaluator import check_groundedness
 
@@ -21,7 +22,7 @@ st.set_page_config(
 )
 
 st.title("💡 InsightRAG")
-st.caption("Intelligent Document Q&A · Retrieval-Augmented Generation")
+st.caption("Intelligent Document Q&A · Hybrid Retrieval (BM25 + Dense Vectors)")
 
 # Sidebar
 with st.sidebar:
@@ -43,6 +44,13 @@ with st.sidebar:
         )
 
     st.divider()
+    st.subheader("Retrieval")
+    st.markdown(
+        f"**Mode:** Hybrid (BM25 + Dense)  \n"
+        f"Weights → BM25: `{HYBRID_WEIGHTS[0]}` · Dense: `{HYBRID_WEIGHTS[1]}`"
+    )
+
+    st.divider()
     st.subheader("Documents")
 
     uploaded_files = st.file_uploader(
@@ -51,7 +59,7 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
-    use_sample = st.checkbox("Load sample company handbook", value=True)
+    use_sample = st.checkbox("Load sample company documents", value=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -61,9 +69,8 @@ with st.sidebar:
 
     if clear_btn:
         clear_vectorstore()
-        st.session_state.pop("vectorstore", None)
-        st.session_state.pop("retriever", None)
-        st.session_state.pop("messages", None)
+        for key in ["vectorstore", "retriever", "chunks", "messages"]:
+            st.session_state.pop(key, None)
         st.success("Index cleared.")
         st.rerun()
 
@@ -71,13 +78,11 @@ with st.sidebar:
 if process_btn:
     file_paths = []
 
-    # Sample data
     if use_sample and SAMPLE_DIR.exists():
         for f in SAMPLE_DIR.glob("*"):
             if f.suffix.lower() in {".txt", ".md", ".pdf"}:
                 file_paths.append(f)
 
-    # Uploaded files
     if uploaded_files:
         for uf in uploaded_files:
             save_path = UPLOAD_DIR / uf.name
@@ -88,22 +93,34 @@ if process_btn:
     if not file_paths:
         st.warning("No documents selected.")
     else:
-        with st.spinner("Loading, chunking and embedding documents..."):
+        with st.spinner("Loading, chunking, embedding & building hybrid index..."):
             chunks = load_and_chunk(file_paths)
             vectorstore = get_vectorstore()
             add_documents(vectorstore, chunks)
-            st.session_state["vectorstore"] = vectorstore
-            st.session_state["retriever"] = get_retriever(vectorstore, k=TOP_K)
-            st.success(f"Processed {len(chunks)} chunks from {len(file_paths)} file(s).")
 
-# Chat interface
+            # Build hybrid retriever (BM25 needs the documents in memory)
+            hybrid_retriever = create_hybrid_retriever(
+                documents=chunks,
+                vectorstore=vectorstore,
+            )
+
+            st.session_state["vectorstore"] = vectorstore
+            st.session_state["chunks"] = chunks
+            st.session_state["retriever"] = hybrid_retriever
+
+            st.success(
+                f"Ready — {len(chunks)} chunks from {len(file_paths)} file(s). "
+                f"Hybrid search enabled."
+            )
+
+# Chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if "sources" in msg and msg["sources"]:
+        if msg.get("sources"):
             with st.expander("Sources"):
                 for s in msg["sources"]:
                     st.markdown(f"- `{s}`")
@@ -111,21 +128,24 @@ for msg in st.session_state.messages:
 # Chat input
 if prompt := st.chat_input("Ask a question about your documents..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
+
     with st.chat_message("user"):
         st.markdown(prompt)
 
     if "retriever" not in st.session_state:
         with st.chat_message("assistant"):
-            st.warning("Please process some documents first (sidebar).")
+            st.warning("Please process some documents first using the sidebar.")
     else:
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with st.spinner("Retrieving (hybrid) + generating answer..."):
                 try:
                     llm = get_llm(provider=provider, openai_api_key=openai_key or None)
                     chain = create_rag_chain(st.session_state["retriever"], llm)
 
-                    # Retrieve for sources + evaluation
-                    docs = st.session_state["retriever"].invoke(prompt)
+                    # Retrieve docs (for sources + evaluation)
+                    docs = retrieve_with_scores(
+                        st.session_state["retriever"], prompt, k=TOP_K
+                    )
                     answer = answer_question(chain, prompt)
 
                     st.markdown(answer)
@@ -136,10 +156,10 @@ if prompt := st.chat_input("Ask a question about your documents..."):
                             for s in sources:
                                 st.markdown(f"- `{s}`")
 
-                    # Optional groundedness check
                     grounded = check_groundedness(answer, docs)
                     st.caption(
-                        f"Groundedness (heuristic): {grounded['score']} · "
+                        f"Retrieval: Hybrid (BM25 + Dense) · "
+                        f"Groundedness: {grounded['score']} · "
                         f"{'Looks grounded' if grounded['is_grounded'] else 'May be weakly grounded'}"
                     )
 
