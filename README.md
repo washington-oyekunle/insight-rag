@@ -1,111 +1,82 @@
 # InsightRAG 💡
 
-**Production-style Document Q&A**  
-Hybrid Retrieval · Cross-Encoder Reranking · Query Rewriting · FastAPI · Docker
+**Portfolio-grade Document Q&A System**
 
-A portfolio-grade RAG system designed to demonstrate real Applied AI / LLM engineering skills.
+Hybrid Retrieval · Cross-Encoder Reranking · Query Rewriting · Agentic Routing · Self-Correction · Observability · FastAPI · Docker
+
+Built to demonstrate the skills hiring managers look for in Applied AI / LLM Engineer roles.
 
 ---
 
-## Features
+## Feature Matrix
 
-### Tier-1
-- Hybrid search (BM25 + Dense vectors)
-- Cross-encoder reranking
-- Streaming answers
-- Rich source snippets + relevance scores
-- Document management UI
-- Golden-set evaluation suite
-
-### Tier-2
-- **Query rewriting** — improves retrieval on vague questions
-- **Metadata filtering** — restrict search to selected documents
-- **FastAPI backend** — clean REST API with streaming
-- **Docker + docker-compose** — one-command startup
-- **Chat history persistence** — sessions saved to disk
+| Tier | Capabilities |
+|------|----------------|
+| **1** | Hybrid BM25+Dense, Cross-encoder rerank, Streaming, Source snippets, Doc management, Golden-set eval |
+| **2** | Query rewriting, Metadata filtering, FastAPI, Docker Compose, Chat persistence |
+| **3** | Agentic routing, Self-correcting retrieval, Structured query logs, `/stats` observability |
 
 ---
 
 ## Architecture
 
 ```
-User Question
-      ↓
-Query Rewriter (LLM)
-      ↓
+User Message
+     ↓
+Agentic Router ─► CHITCHAT / CLARIFY / RETRIEVE
+     ↓ (RETRIEVE)
+Query Rewriter
+     ↓
 Hybrid Retriever (BM25 + Dense / RRF)
-      ↓
+     ↓
 Metadata Filter (optional)
-      ↓
+     ↓
 Cross-Encoder Reranker
-      ↓
-Streaming LLM Generation
-      ↓
-Answer + Source Snippets + Scores
+     ↓
+LLM Answer
+     ↓
+Groundedness Check ─► weak? → Reformulate + Retrieve again (self-correct)
+     ↓
+Observability Log (latency, sources, scores, corrections)
 ```
 
 ---
 
-## Quick Start (Local)
+## Quick Start
 
+### Local
 ```bash
 git clone https://github.com/washington-oyekunle/insight-rag.git
 cd insight-rag
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Local LLM (recommended)
 ollama pull llama3.2
 
-# UI
 streamlit run app.py
-
-# API (separate terminal)
+# API:
 uvicorn api.main:app --reload --port 8000
 ```
 
-API docs: http://localhost:8000/docs
-
----
-
-## Quick Start (Docker)
-
+### Docker
 ```bash
-# Ensure Ollama is running on the host
 docker compose up --build
 ```
-
-- UI:  http://localhost:8501  
-- API: http://localhost:8000  
-- Docs: http://localhost:8000/docs
+- UI: http://localhost:8501
+- API: http://localhost:8000/docs
 
 ---
 
-## API Overview
+## API Highlights
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health + index status |
-| GET | `/documents` | Listed indexed docs |
-| POST | `/index/sample` | Index bundled sample docs |
-| POST | `/index/upload` | Upload & index files |
-| POST | `/query` | Non-streaming Q&A |
-| POST | `/query/stream` | Streaming Q&A |
-| DELETE | `/documents` | Clear index |
-| POST | `/sessions` | Create chat session |
-| GET | `/sessions/{id}` | Load chat history |
-
-Example:
-```bash
-# Index samples
-curl -X POST http://localhost:8000/index/sample
-
-# Ask a question
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the remote work policy?"}'
-```
+| Endpoint | Description |
+|----------|-------------|
+| `POST /query` | Full agentic + self-correcting Q&A |
+| `POST /query/stream` | Streaming responses |
+| `GET /stats` | Avg latency, correction rate, groundedness |
+| `GET /logs` | Recent structured query events |
+| `POST /index/sample` | Index demo documents |
+| `POST /index/upload` | Upload & index files |
 
 ---
 
@@ -115,27 +86,26 @@ curl -X POST http://localhost:8000/query \
 python -m scripts.run_evaluation
 ```
 
-Reports retrieval hit rate and groundedness against `data/eval/golden_set.json`.
-
 ---
 
 ## Project Structure
 
 ```
 insight-rag/
-├── api/main.py              # FastAPI backend
-├── app.py                   # Streamlit UI
+├── api/main.py
+├── app.py
 ├── Dockerfile
 ├── docker-compose.yml
 ├── scripts/run_evaluation.py
 ├── src/
-│   ├── pipeline.py          # Shared RAG pipeline
-│   ├── retriever.py          # Hybrid + rerank + filter
-│   ├── query_rewrite.py      # Query rewriting
+│   ├── pipeline.py         # Orchestrates full Tier-3 flow
+│   ├── agent.py            # Routing + reformulation
+│   ├── observability.py    # JSONL logs + stats
+│   ├── retriever.py
+│   ├── query_rewrite.py
 │   ├── rag_chain.py
-│   ├── chat_history.py       # Session persistence
-│   ├── evaluator.py
-│   └── ...
+│   ├── chat_history.py
+│   └── evaluator.py
 └── data/
     ├── sample/
     └── eval/golden_set.json
@@ -145,12 +115,12 @@ insight-rag/
 
 ## Interview Talking Points
 
-- **Hybrid retrieval** improves recall on keyword *and* semantic queries
-- **Cross-encoder reranking** boosts precision of the final context window
-- **Query rewriting** helps with conversational / vague user input
-- **FastAPI + Docker** shows you can ship beyond notebooks
-- **Evaluation harness** proves you measure quality, not just demos
-- **Metadata filtering** is a step toward access control and multi-tenant search
+1. **Hybrid retrieval + reranking** — production pattern for high recall *and* precision
+2. **Query rewriting** — bridges conversational questions and search terms
+3. **Agentic routing** — not every message should hit the vector DB
+4. **Self-correction** — detect weak groundedness and retry with a reformulated query
+5. **Observability** — log latency, sources, corrections; expose `/stats`
+6. **API + Docker** — ship beyond notebooks
 
 ---
 

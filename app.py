@@ -1,34 +1,32 @@
-"""InsightRAG — Streamlit UI (Tier-2)
+"""InsightRAG — Streamlit UI (Tier-3)
 
-Features:
-- Hybrid search + Cross-encoder reranking
-- Query rewriting
-- Streaming answers
-- Metadata (source) filtering
-- Document management
-- Chat history persistence
+Agentic routing · Self-correction · Observability-aware captions
 """
 
 import os
-from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS, USE_RERANKER, USE_QUERY_REWRITE
+from src.config import (
+    SAMPLE_DIR,
+    UPLOAD_DIR,
+    HYBRID_WEIGHTS,
+    USE_RERANKER,
+    USE_QUERY_REWRITE,
+    USE_SELF_CORRECTION,
+)
 from src.pipeline import RAGPipeline
 from src.chat_history import create_session, append_message, load_history
+from src.observability import compute_stats
 
 load_dotenv()
 
 st.set_page_config(page_title="InsightRAG", page_icon="💡", layout="wide")
 
 st.title("💡 InsightRAG")
-st.caption("Hybrid + Reranker + Query Rewrite · Streaming · Source Filtering")
+st.caption("Agentic RAG · Hybrid + Rerank + Rewrite + Self-Correction · Observability")
 
-# --------------------------------------------------------------------------
-# Session-scoped pipeline
-# --------------------------------------------------------------------------
 if "pipeline" not in st.session_state:
     st.session_state.pipeline = RAGPipeline()
 
@@ -40,9 +38,7 @@ if "messages" not in st.session_state:
 
 pipeline: RAGPipeline = st.session_state.pipeline
 
-# --------------------------------------------------------------------------
 # Sidebar
-# --------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
 
@@ -54,14 +50,17 @@ with st.sidebar:
         )
 
     use_rewrite = st.checkbox("Query rewriting", value=USE_QUERY_REWRITE)
+    use_correction = st.checkbox("Self-correction", value=USE_SELF_CORRECTION)
 
     st.divider()
-    st.subheader("Retrieval Pipeline")
+    st.subheader("Pipeline")
     st.markdown(
         f"""
-- Hybrid: BM25 + Dense (`{HYBRID_WEIGHTS[0]}` / `{HYBRID_WEIGHTS[1]}`)
+- Hybrid BM25+Dense (`{HYBRID_WEIGHTS[0]}`/`{HYBRID_WEIGHTS[1]}`)
 - Reranker: {'On' if USE_RERANKER else 'Off'}
-- Query rewrite: {'On' if use_rewrite else 'Off'}
+- Rewrite: {'On' if use_rewrite else 'Off'}
+- Self-correct: {'On' if use_correction else 'Off'}
+- Agentic routing: On
         """
     )
 
@@ -73,15 +72,13 @@ with st.sidebar:
     )
     use_sample = st.checkbox("Load sample documents", value=True)
 
-    # Source filter (metadata filtering)
     available_sources = list(pipeline.doc_stats.keys()) if pipeline.doc_stats else []
     source_filter = None
     if available_sources:
         selected = st.multiselect(
-            "Filter by document (optional)",
+            "Filter by document",
             options=available_sources,
             default=available_sources,
-            help="Only retrieve from selected documents",
         )
         if selected and set(selected) != set(available_sources):
             source_filter = selected
@@ -101,20 +98,29 @@ with st.sidebar:
 
     if pipeline.doc_stats:
         st.divider()
-        st.subheader("Indexed Documents")
+        st.subheader("Indexed")
         for name, count in pipeline.doc_stats.items():
             st.markdown(f"- `{name}` — **{count}** chunks")
         st.caption(f"Total chunks: {len(pipeline.chunks)}")
 
+    # Observability snapshot
     st.divider()
+    st.subheader("Stats")
+    stats = compute_stats()
+    st.markdown(
+        f"""
+- Queries: **{stats['total_queries']}**
+- Avg latency: **{stats['avg_latency_ms']} ms**
+- Self-correct rate: **{stats['self_correction_rate']:.0%}**
+- Avg groundedness: **{stats['avg_groundedness']}**
+        """
+    )
+
     st.caption(f"Session: `{st.session_state.session_id}`")
 
-# --------------------------------------------------------------------------
 # Process documents
-# --------------------------------------------------------------------------
 if process_btn:
     file_paths = []
-
     if use_sample and SAMPLE_DIR.exists():
         for f in SAMPLE_DIR.glob("*"):
             if f.suffix.lower() in {".txt", ".md", ".pdf"}:
@@ -130,16 +136,12 @@ if process_btn:
     if not file_paths:
         st.warning("No documents selected.")
     else:
-        with st.spinner("Indexing documents..."):
+        with st.spinner("Indexing..."):
             result = pipeline.index_files(file_paths)
-            st.success(
-                f"Ready — {result['chunks']} chunks from {result['documents']} document(s)."
-            )
+            st.success(f"Ready — {result['chunks']} chunks from {result['documents']} docs.")
             st.rerun()
 
-# --------------------------------------------------------------------------
-# Chat
-# --------------------------------------------------------------------------
+# Chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -157,55 +159,56 @@ if prompt := st.chat_input("Ask a question about your documents..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    if not pipeline.is_ready:
-        with st.chat_message("assistant"):
-            st.warning("Please process some documents first.")
-    else:
-        with st.chat_message("assistant"):
-            try:
-                result = pipeline.query(
-                    question=prompt,
-                    provider=provider,
-                    openai_api_key=openai_key or None,
-                    source_filter=source_filter,
-                    use_rewrite=use_rewrite,
-                    stream=True,
+    with st.chat_message("assistant"):
+        try:
+            # Non-stream path enables full self-correction + routing
+            result = pipeline.query(
+                question=prompt,
+                provider=provider,
+                openai_api_key=openai_key or None,
+                source_filter=source_filter,
+                use_rewrite=use_rewrite,
+                use_self_correction=use_correction,
+                stream=False,
+            )
+
+            answer = result.get("answer", "")
+            st.markdown(answer)
+
+            meta_parts = [f"Route: `{result.get('route', 'RETRIEVE')}`"]
+            if result.get("search_query") and result["search_query"] != prompt:
+                meta_parts.append(f"Query: _{result['search_query']}_")
+            if result.get("self_corrected"):
+                meta_parts.append(
+                    f"Self-corrected ({result.get('correction_rounds', 1)} round)"
                 )
+            g = result.get("groundedness") or {}
+            if g:
+                meta_parts.append(f"Groundedness: {g.get('score', 0)}")
+            st.caption(" · ".join(meta_parts))
 
-                if result["search_query"] != prompt:
-                    st.caption(f"Rewritten query: _{result['search_query']}_")
+            sources = result.get("sources") or []
+            if sources:
+                with st.expander("Sources & Snippets"):
+                    for src in sources:
+                        st.markdown(
+                            f"**{src['name']}** · relevance: `{src['score']:.3f}`"
+                        )
+                        st.markdown(f"> {src['snippet']}")
+                        st.markdown("---")
 
-                response_placeholder = st.empty()
-                full_answer = ""
-                for chunk in result["stream"]:
-                    full_answer += chunk
-                    response_placeholder.markdown(full_answer + "▌")
-                response_placeholder.markdown(full_answer)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer, "sources": sources}
+            )
+            append_message(
+                st.session_state.session_id,
+                "assistant",
+                answer,
+                sources=sources,
+            )
 
-                sources = result["sources"]
-                if sources:
-                    with st.expander("Sources & Snippets"):
-                        for src in sources:
-                            st.markdown(
-                                f"**{src['name']}** · relevance: `{src['score']:.3f}`"
-                            )
-                            st.markdown(f"> {src['snippet']}")
-                            st.markdown("---")
-
-                st.caption("Pipeline: Rewrite → Hybrid → Rerank → Generate")
-
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": full_answer, "sources": sources}
-                )
-                append_message(
-                    st.session_state.session_id,
-                    "assistant",
-                    full_answer,
-                    sources=sources,
-                )
-
-            except Exception as e:
-                st.error(
-                    f"Error: {e}\n\n"
-                    "If using Ollama, ensure it is running and the model is pulled."
-                )
+        except Exception as e:
+            st.error(
+                f"Error: {e}\n\n"
+                "If using Ollama, ensure it is running and the model is pulled."
+            )

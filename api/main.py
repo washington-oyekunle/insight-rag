@@ -1,15 +1,8 @@
-"""InsightRAG FastAPI backend.
+"""InsightRAG FastAPI backend (Tier-3).
 
-Endpoints:
-- GET  /health
-- GET  /documents
-- POST /index/sample
-- POST /index/upload
-- POST /query
-- POST /query/stream
-- DELETE /documents
-- GET  /sessions
-- GET  /sessions/{session_id}
+Adds:
+- Agentic routing + self-correction (via pipeline)
+- Observability endpoints (/logs, /stats)
 """
 
 import os
@@ -17,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -25,11 +18,12 @@ from pydantic import BaseModel, Field
 from src.config import UPLOAD_DIR, API_HOST, API_PORT
 from src.pipeline import pipeline
 from src.chat_history import create_session, load_history, append_message, list_sessions
+from src.observability import read_logs, compute_stats
 
 app = FastAPI(
     title="InsightRAG API",
-    description="Hybrid RAG with reranking, query rewriting, and streaming",
-    version="2.0.0",
+    description="Hybrid RAG with reranking, query rewriting, self-correction, and observability",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -47,6 +41,7 @@ class QueryRequest(BaseModel):
     openai_api_key: Optional[str] = None
     source_filter: Optional[List[str]] = None
     use_rewrite: bool = True
+    use_self_correction: bool = True
     session_id: Optional[str] = None
 
 
@@ -55,6 +50,9 @@ class QueryResponse(BaseModel):
     search_query: str
     sources: List[dict]
     groundedness: dict
+    route: str = "RETRIEVE"
+    self_corrected: bool = False
+    correction_rounds: int = 0
     session_id: Optional[str] = None
 
 
@@ -62,6 +60,7 @@ class QueryResponse(BaseModel):
 def health():
     return {
         "status": "ok",
+        "version": "3.0.0",
         "ready": pipeline.is_ready,
         "documents": pipeline.doc_stats,
         "chunks": len(pipeline.chunks),
@@ -115,9 +114,6 @@ def clear_documents():
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
-    if not pipeline.is_ready:
-        raise HTTPException(status_code=400, detail="No documents indexed")
-
     try:
         result = pipeline.query(
             question=req.question,
@@ -125,30 +121,31 @@ def query(req: QueryRequest):
             openai_api_key=req.openai_api_key or os.getenv("OPENAI_API_KEY"),
             source_filter=req.source_filter,
             use_rewrite=req.use_rewrite,
+            use_self_correction=req.use_self_correction,
             stream=False,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     session_id = req.session_id
-    if session_id:
+    if session_id and result.get("answer"):
         append_message(session_id, "user", req.question)
-        append_message(session_id, "assistant", result["answer"], sources=result["sources"])
+        append_message(session_id, "assistant", result["answer"], sources=result.get("sources"))
 
     return QueryResponse(
-        answer=result["answer"],
-        search_query=result["search_query"],
-        sources=result["sources"],
-        groundedness=result["groundedness"],
+        answer=result.get("answer", ""),
+        search_query=result.get("search_query", ""),
+        sources=result.get("sources", []),
+        groundedness=result.get("groundedness", {}),
+        route=result.get("route", "RETRIEVE"),
+        self_corrected=result.get("self_corrected", False),
+        correction_rounds=result.get("correction_rounds", 0),
         session_id=session_id,
     )
 
 
 @app.post("/query/stream")
 def query_stream(req: QueryRequest):
-    if not pipeline.is_ready:
-        raise HTTPException(status_code=400, detail="No documents indexed")
-
     try:
         result = pipeline.query(
             question=req.question,
@@ -156,6 +153,7 @@ def query_stream(req: QueryRequest):
             openai_api_key=req.openai_api_key or os.getenv("OPENAI_API_KEY"),
             source_filter=req.source_filter,
             use_rewrite=req.use_rewrite,
+            use_self_correction=False,  # full correction needs non-stream path
             stream=True,
         )
     except Exception as e:
@@ -166,14 +164,13 @@ def query_stream(req: QueryRequest):
         for chunk in result["stream"]:
             full.append(chunk)
             yield chunk
-        # Persist after stream completes
         if req.session_id:
             append_message(req.session_id, "user", req.question)
             append_message(
                 req.session_id,
                 "assistant",
                 "".join(full),
-                sources=result["sources"],
+                sources=result.get("sources"),
             )
 
     return StreamingResponse(event_generator(), media_type="text/plain")
@@ -181,8 +178,7 @@ def query_stream(req: QueryRequest):
 
 @app.post("/sessions")
 def new_session():
-    session_id = create_session()
-    return {"session_id": session_id}
+    return {"session_id": create_session()}
 
 
 @app.get("/sessions")
@@ -192,8 +188,17 @@ def get_sessions():
 
 @app.get("/sessions/{session_id}")
 def get_session(session_id: str):
-    messages = load_history(session_id)
-    return {"session_id": session_id, "messages": messages}
+    return {"session_id": session_id, "messages": load_history(session_id)}
+
+
+@app.get("/logs")
+def get_logs(limit: int = 50):
+    return {"logs": read_logs(limit=limit)}
+
+
+@app.get("/stats")
+def get_stats():
+    return compute_stats()
 
 
 if __name__ == "__main__":

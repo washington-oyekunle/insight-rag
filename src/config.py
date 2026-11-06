@@ -10,9 +10,10 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = BASE_DIR / "chroma_db"
 EVAL_DIR = DATA_DIR / "eval"
 CHAT_HISTORY_DIR = DATA_DIR / "chat_history"
+LOG_DIR = DATA_DIR / "logs"
 
 # Create directories
-for d in (UPLOAD_DIR, CHROMA_DIR, EVAL_DIR, CHAT_HISTORY_DIR):
+for d in (UPLOAD_DIR, CHROMA_DIR, EVAL_DIR, CHAT_HISTORY_DIR, LOG_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Chunking
@@ -37,6 +38,14 @@ USE_RERANKER = True
 
 # Query rewriting
 USE_QUERY_REWRITE = True
+
+# Self-correction / agentic loop
+USE_SELF_CORRECTION = True
+GROUNDEDNESS_THRESHOLD = 0.25
+MAX_CORRECTION_ROUNDS = 1
+
+# Observability
+ENABLE_LOGGING = True
 
 # LLM settings
 OLLAMA_MODEL = "llama3.2"
