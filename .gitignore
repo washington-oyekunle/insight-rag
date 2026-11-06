@@ -18,6 +18,9 @@ build/
 chroma_db/
 *.chroma
 
+# Chat history (local)
+data/chat_history/
+
 # IDE
 .vscode/
 .idea/
@@ -31,10 +34,11 @@ Thumbs.db
 # Streamlit
 .streamlit/secrets.toml
 
-# Data (keep sample, ignore user uploads)
+# Data (keep sample + eval, ignore uploads)
 data/uploads/
 *.pdf
 !data/sample/*
+!data/eval/*
 
 # Logs
 *.log

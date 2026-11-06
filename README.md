@@ -1,67 +1,52 @@
 # InsightRAG 💡
 
-**Production-style Document Q&A with Hybrid Retrieval + Cross-Encoder Reranking**
+**Production-style Document Q&A**  
+Hybrid Retrieval · Cross-Encoder Reranking · Query Rewriting · FastAPI · Docker
 
-A high-quality RAG system built as a strong portfolio project for AI / ML / LLM Engineer roles.
-
-Upload documents → Ask natural language questions → Get grounded, streamed answers with source snippets and relevance scores.
+A portfolio-grade RAG system designed to demonstrate real Applied AI / LLM engineering skills.
 
 ---
 
-## Key Features (Tier-1)
+## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Hybrid Search** | BM25 (keyword) + Dense vectors fused with Reciprocal Rank Fusion |
-| **Cross-Encoder Reranker** | `ms-marco-MiniLM-L-6-v2` reranks candidates for higher precision |
-| **Streaming Answers** | Token-by-token response for a modern UX |
-| **Rich Sources** | Shows filename, relevance score, and text snippet |
-| **Document Management** | See indexed files and chunk counts in the sidebar |
-| **Evaluation Suite** | Golden set + retrieval hit rate + groundedness metrics |
+### Tier-1
+- Hybrid search (BM25 + Dense vectors)
+- Cross-encoder reranking
+- Streaming answers
+- Rich source snippets + relevance scores
+- Document management UI
+- Golden-set evaluation suite
+
+### Tier-2
+- **Query rewriting** — improves retrieval on vague questions
+- **Metadata filtering** — restrict search to selected documents
+- **FastAPI backend** — clean REST API with streaming
+- **Docker + docker-compose** — one-command startup
+- **Chat history persistence** — sessions saved to disk
 
 ---
 
 ## Architecture
 
 ```
-Documents
-    ↓
-Load + Chunk
-    ↓
-┌──────────────────┐
-│                     │
-BM25 Index          Dense Vectors (Chroma)
-│                     │
-└──────────────────┘
-            ↓
-  EnsembleRetriever (RRF)
-            ↓
-  Cross-Encoder Reranker
-            ↓
-  Top-k chunks + scores
-            ↓
-  Streaming LLM Generation
-            ↓
-  Answer + Source Snippets
+User Question
+      ↓
+Query Rewriter (LLM)
+      ↓
+Hybrid Retriever (BM25 + Dense / RRF)
+      ↓
+Metadata Filter (optional)
+      ↓
+Cross-Encoder Reranker
+      ↓
+Streaming LLM Generation
+      ↓
+Answer + Source Snippets + Scores
 ```
 
 ---
 
-## Why This Project Stands Out
-
-Most portfolio RAG projects stop at basic vector search. This one demonstrates techniques used in real production systems:
-
-- Hybrid retrieval (sparse + dense)
-- Learned reranking
-- Streaming generation
-- Evaluation with a golden set
-- Clean modular architecture
-
-These are exactly the topics that come up in Applied AI / LLM Engineer interviews.
-
----
-
-## Quick Start
+## Quick Start (Local)
 
 ```bash
 git clone https://github.com/washington-oyekunle/insight-rag.git
@@ -70,22 +55,67 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Recommended: local LLM
+# Local LLM (recommended)
 ollama pull llama3.2
 
+# UI
 streamlit run app.py
+
+# API (separate terminal)
+uvicorn api.main:app --reload --port 8000
 ```
 
-### Run the evaluation suite
+API docs: http://localhost:8000/docs
+
+---
+
+## Quick Start (Docker)
+
+```bash
+# Ensure Ollama is running on the host
+docker compose up --build
+```
+
+- UI:  http://localhost:8501  
+- API: http://localhost:8000  
+- Docs: http://localhost:8000/docs
+
+---
+
+## API Overview
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health + index status |
+| GET | `/documents` | Listed indexed docs |
+| POST | `/index/sample` | Index bundled sample docs |
+| POST | `/index/upload` | Upload & index files |
+| POST | `/query` | Non-streaming Q&A |
+| POST | `/query/stream` | Streaming Q&A |
+| DELETE | `/documents` | Clear index |
+| POST | `/sessions` | Create chat session |
+| GET | `/sessions/{id}` | Load chat history |
+
+Example:
+```bash
+# Index samples
+curl -X POST http://localhost:8000/index/sample
+
+# Ask a question
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the remote work policy?"}'
+```
+
+---
+
+## Evaluation
 
 ```bash
 python -m scripts.run_evaluation
 ```
 
-This runs the system against a golden question set and reports:
-- Retrieval hit rate
-- Groundedness rate
-- Per-question diagnostics
+Reports retrieval hit rate and groundedness against `data/eval/golden_set.json`.
 
 ---
 
@@ -93,71 +123,34 @@ This runs the system against a golden question set and reports:
 
 ```
 insight-rag/
-├── app.py                     # Streamlit UI (streaming + sources + doc management)
-├── requirements.txt
-├── scripts/
-│   └── run_evaluation.py     # Golden-set evaluation runner
+├── api/main.py              # FastAPI backend
+├── app.py                   # Streamlit UI
+├── Dockerfile
+├── docker-compose.yml
+├── scripts/run_evaluation.py
 ├── src/
-│   ├── config.py
-│   ├── document_loader.py
-│   ├── embeddings.py
-│   ├── vectorstore.py
-│   ├── retriever.py          # Hybrid + Reranker
-│   ├── rag_chain.py           # Prompting + streaming
-│   └── evaluator.py
+│   ├── pipeline.py          # Shared RAG pipeline
+│   ├── retriever.py          # Hybrid + rerank + filter
+│   ├── query_rewrite.py      # Query rewriting
+│   ├── rag_chain.py
+│   ├── chat_history.py       # Session persistence
+│   ├── evaluator.py
+│   └── ...
 └── data/
-    ├── sample/                # Demo documents
-    └── eval/
-        └── golden_set.json    # Evaluation questions
+    ├── sample/
+    └── eval/golden_set.json
 ```
-
----
-
-## Configuration
-
-All important settings live in `src/config.py`:
-
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| `HYBRID_WEIGHTS` | `[0.4, 0.6]` | BM25 vs Dense influence |
-| `RERANKER_MODEL` | `ms-marco-MiniLM-L-6-v2` | Cross-encoder model |
-| `USE_RERANKER` | `True` | Toggle reranking |
-| `TOP_K` | `4` | Final documents after rerank |
-| `RERANK_CANDIDATES` | `12` | Candidates fed to reranker |
-| `CHUNK_SIZE` | `800` | Chunk size |
-
----
-
-## Sample Questions
-
-- "What is the remote work policy?"
-- "How many days of PTO do employees get?"
-- "What parental leave is offered?"
-- "What are the pricing tiers for Acme Cloud Platform?"
-- "How does the cost insights feature work?"
 
 ---
 
 ## Interview Talking Points
 
-**Problem**  
-Internal knowledge is trapped in documents. Generic LLMs hallucinate or lack access.
-
-**Solution**  
-A hybrid RAG pipeline with reranking that returns grounded answers + evidence.
-
-**Key decisions**
-- Hybrid retrieval improves recall on both keyword and semantic queries
-- Cross-encoder reranking significantly boosts precision of the final context
-- Streaming + source snippets create a trustworthy user experience
-- Golden-set evaluation shows commitment to measuring quality
-
-**Natural next steps** (great to discuss)
-1. Metadata filtering & access control
-2. Agentic / multi-step retrieval
-3. Full RAGAS evaluation suite
-4. FastAPI + Docker deployment
-5. Observability (latency, retrieval logs, feedback loops)
+- **Hybrid retrieval** improves recall on keyword *and* semantic queries
+- **Cross-encoder reranking** boosts precision of the final context window
+- **Query rewriting** helps with conversational / vague user input
+- **FastAPI + Docker** shows you can ship beyond notebooks
+- **Evaluation harness** proves you measure quality, not just demos
+- **Metadata filtering** is a step toward access control and multi-tenant search
 
 ---
 

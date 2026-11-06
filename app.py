@@ -1,37 +1,44 @@
-"""InsightRAG — Streamlit UI
+"""InsightRAG — Streamlit UI (Tier-2)
 
-Tier-1 features:
-- Hybrid search (BM25 + Dense)
-- Cross-encoder reranking
+Features:
+- Hybrid search + Cross-encoder reranking
+- Query rewriting
 - Streaming answers
-- Rich source display (snippets)
+- Metadata (source) filtering
 - Document management
+- Chat history persistence
 """
 
 import os
 from pathlib import Path
-from collections import defaultdict
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS, USE_RERANKER
-from src.document_loader import load_and_chunk
-from src.vectorstore import get_vectorstore, add_documents, clear_vectorstore
-from src.retriever import create_hybrid_retriever, retrieve_and_rerank
-from src.rag_chain import get_llm, create_rag_chain, stream_answer
-from src.evaluator import check_groundedness
+from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS, USE_RERANKER, USE_QUERY_REWRITE
+from src.pipeline import RAGPipeline
+from src.chat_history import create_session, append_message, load_history
 
 load_dotenv()
 
-st.set_page_config(
-    page_title="InsightRAG",
-    page_icon="💡",
-    layout="wide",
-)
+st.set_page_config(page_title="InsightRAG", page_icon="💡", layout="wide")
 
 st.title("💡 InsightRAG")
-st.caption("Hybrid Retrieval + Cross-Encoder Reranking · Streaming Answers")
+st.caption("Hybrid + Reranker + Query Rewrite · Streaming · Source Filtering")
+
+# --------------------------------------------------------------------------
+# Session-scoped pipeline
+# --------------------------------------------------------------------------
+if "pipeline" not in st.session_state:
+    st.session_state.pipeline = RAGPipeline()
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = create_session()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = load_history(st.session_state.session_id)
+
+pipeline: RAGPipeline = st.session_state.pipeline
 
 # --------------------------------------------------------------------------
 # Sidebar
@@ -39,27 +46,22 @@ st.caption("Hybrid Retrieval + Cross-Encoder Reranking · Streaming Answers")
 with st.sidebar:
     st.header("Settings")
 
-    provider = st.selectbox(
-        "LLM Provider",
-        options=["ollama", "openai"],
-        index=0,
-        help="Ollama is fully local and free. OpenAI requires an API key.",
-    )
-
+    provider = st.selectbox("LLM Provider", ["ollama", "openai"], index=0)
     openai_key = None
     if provider == "openai":
         openai_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            value=os.getenv("OPENAI_API_KEY", ""),
+            "OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", "")
         )
+
+    use_rewrite = st.checkbox("Query rewriting", value=USE_QUERY_REWRITE)
 
     st.divider()
     st.subheader("Retrieval Pipeline")
     st.markdown(
         f"""
-- **Hybrid**: BM25 + Dense (weights {HYBRID_WEIGHTS[0]} / {HYBRID_WEIGHTS[1]})
-- **Reranker**: `{'Enabled' if USE_RERANKER else 'Disabled'}` (Cross-Encoder)
+- Hybrid: BM25 + Dense (`{HYBRID_WEIGHTS[0]}` / `{HYBRID_WEIGHTS[1]}`)
+- Reranker: {'On' if USE_RERANKER else 'Off'}
+- Query rewrite: {'On' if use_rewrite else 'Off'}
         """
     )
 
@@ -67,35 +69,45 @@ with st.sidebar:
     st.subheader("Documents")
 
     uploaded_files = st.file_uploader(
-        "Upload PDF or TXT files",
-        type=["pdf", "txt", "md"],
-        accept_multiple_files=True,
+        "Upload PDF or TXT", type=["pdf", "txt", "md"], accept_multiple_files=True
     )
+    use_sample = st.checkbox("Load sample documents", value=True)
 
-    use_sample = st.checkbox("Load sample company documents", value=True)
+    # Source filter (metadata filtering)
+    available_sources = list(pipeline.doc_stats.keys()) if pipeline.doc_stats else []
+    source_filter = None
+    if available_sources:
+        selected = st.multiselect(
+            "Filter by document (optional)",
+            options=available_sources,
+            default=available_sources,
+            help="Only retrieve from selected documents",
+        )
+        if selected and set(selected) != set(available_sources):
+            source_filter = selected
 
-    col1, col2 = st.columns(2)
-    with col1:
-        process_btn = st.button("Process Documents", type="primary", use_container_width=True)
-    with col2:
+    c1, c2 = st.columns(2)
+    with c1:
+        process_btn = st.button("Process", type="primary", use_container_width=True)
+    with c2:
         clear_btn = st.button("Clear All", use_container_width=True)
 
     if clear_btn:
-        clear_vectorstore()
-        for key in ["vectorstore", "retriever", "chunks", "doc_stats", "messages"]:
-            st.session_state.pop(key, None)
+        pipeline.clear()
+        st.session_state.messages = []
+        st.session_state.session_id = create_session()
         st.success("Index cleared.")
         st.rerun()
 
-    # Document management panel
-    if "doc_stats" in st.session_state and st.session_state["doc_stats"]:
+    if pipeline.doc_stats:
         st.divider()
         st.subheader("Indexed Documents")
-        total_chunks = 0
-        for name, count in st.session_state["doc_stats"].items():
+        for name, count in pipeline.doc_stats.items():
             st.markdown(f"- `{name}` — **{count}** chunks")
-            total_chunks += count
-        st.caption(f"Total chunks: {total_chunks}")
+        st.caption(f"Total chunks: {len(pipeline.chunks)}")
+
+    st.divider()
+    st.caption(f"Session: `{st.session_state.session_id}`")
 
 # --------------------------------------------------------------------------
 # Process documents
@@ -118,38 +130,16 @@ if process_btn:
     if not file_paths:
         st.warning("No documents selected.")
     else:
-        with st.spinner("Loading, chunking, embedding & building hybrid index..."):
-            chunks = load_and_chunk(file_paths)
-            vectorstore = get_vectorstore()
-            add_documents(vectorstore, chunks)
-
-            hybrid_retriever = create_hybrid_retriever(
-                documents=chunks,
-                vectorstore=vectorstore,
-            )
-
-            # Build document statistics
-            stats = defaultdict(int)
-            for c in chunks:
-                stats[c.metadata.get("source", "unknown")] += 1
-
-            st.session_state["vectorstore"] = vectorstore
-            st.session_state["chunks"] = chunks
-            st.session_state["retriever"] = hybrid_retriever
-            st.session_state["doc_stats"] = dict(stats)
-
+        with st.spinner("Indexing documents..."):
+            result = pipeline.index_files(file_paths)
             st.success(
-                f"Ready — {len(chunks)} chunks from {len(stats)} document(s). "
-                f"Hybrid + Reranker enabled."
+                f"Ready — {result['chunks']} chunks from {result['documents']} document(s)."
             )
             st.rerun()
 
 # --------------------------------------------------------------------------
-# Chat interface
+# Chat
 # --------------------------------------------------------------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -160,77 +150,62 @@ for msg in st.session_state.messages:
                     st.markdown(f"> {src['snippet']}")
                     st.markdown("---")
 
-# Chat input
 if prompt := st.chat_input("Ask a question about your documents..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
+    append_message(st.session_state.session_id, "user", prompt)
 
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    if "retriever" not in st.session_state:
+    if not pipeline.is_ready:
         with st.chat_message("assistant"):
-            st.warning("Please process some documents first using the sidebar.")
+            st.warning("Please process some documents first.")
     else:
         with st.chat_message("assistant"):
             try:
-                # 1. Retrieve + Rerank
-                with st.spinner("Retrieving & reranking..."):
-                    ranked = retrieve_and_rerank(
-                        st.session_state["retriever"],
-                        prompt,
-                        top_k=TOP_K,
-                    )
-                    docs = [doc for doc, score in ranked]
-                    scores = [score for doc, score in ranked]
+                result = pipeline.query(
+                    question=prompt,
+                    provider=provider,
+                    openai_api_key=openai_key or None,
+                    source_filter=source_filter,
+                    use_rewrite=use_rewrite,
+                    stream=True,
+                )
 
-                # 2. Stream the answer
-                llm = get_llm(provider=provider, openai_api_key=openai_key or None)
-                chain = create_rag_chain(llm)
+                if result["search_query"] != prompt:
+                    st.caption(f"Rewritten query: _{result['search_query']}_")
 
                 response_placeholder = st.empty()
                 full_answer = ""
-
-                for chunk in stream_answer(chain, prompt, docs):
+                for chunk in result["stream"]:
                     full_answer += chunk
                     response_placeholder.markdown(full_answer + "▌")
-
                 response_placeholder.markdown(full_answer)
 
-                # 3. Rich source display
-                sources_for_ui = []
-                if docs:
-                    with st.expander("Sources & Snippets", expanded=False):
-                        for doc, score in zip(docs, scores):
-                            name = doc.metadata.get("source", "unknown")
-                            snippet = doc.page_content.strip().replace("\n", " ")
-                            if len(snippet) > 280:
-                                snippet = snippet[:280] + "..."
-                            st.markdown(f"**{name}** · relevance: `{score:.3f}`")
-                            st.markdown(f"> {snippet}")
-                            st.markdown("---")
-                            sources_for_ui.append(
-                                {"name": name, "snippet": snippet, "score": float(score)}
+                sources = result["sources"]
+                if sources:
+                    with st.expander("Sources & Snippets"):
+                        for src in sources:
+                            st.markdown(
+                                f"**{src['name']}** · relevance: `{src['score']:.3f}`"
                             )
+                            st.markdown(f"> {src['snippet']}")
+                            st.markdown("---")
 
-                # 4. Groundedness indicator
-                grounded = check_groundedness(full_answer, docs)
-                st.caption(
-                    f"Pipeline: Hybrid → Reranker · "
-                    f"Groundedness: {grounded['score']} · "
-                    f"{'Looks grounded' if grounded['is_grounded'] else 'May be weakly grounded'}"
-                )
+                st.caption("Pipeline: Rewrite → Hybrid → Rerank → Generate")
 
                 st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": full_answer,
-                        "sources": sources_for_ui,
-                    }
+                    {"role": "assistant", "content": full_answer, "sources": sources}
+                )
+                append_message(
+                    st.session_state.session_id,
+                    "assistant",
+                    full_answer,
+                    sources=sources,
                 )
 
             except Exception as e:
                 st.error(
                     f"Error: {e}\n\n"
-                    "If using Ollama, make sure it is running (`ollama serve`) "
-                    "and the model is pulled (`ollama pull llama3.2`)."
+                    "If using Ollama, ensure it is running and the model is pulled."
                 )

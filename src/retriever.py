@@ -1,8 +1,10 @@
-"""Hybrid retrieval + Cross-Encoder reranking.
+"""Hybrid retrieval + Cross-Encoder reranking + optional metadata filtering.
 
 Pipeline:
-1. BM25 (sparse) + Dense vectors (Chroma) via EnsembleRetriever
-2. Cross-encoder reranker to select the best final documents
+1. (Optional) Query rewriting
+2. BM25 + Dense vectors via EnsembleRetriever
+3. Optional metadata filter (e.g. by source)
+4. Cross-encoder reranker
 """
 
 from typing import List, Optional, Tuple
@@ -23,7 +25,6 @@ from src.config import (
 )
 from src.vectorstore import get_vectorstore
 
-# Lazy-load the cross-encoder so import is fast
 _reranker = None
 
 
@@ -52,7 +53,6 @@ def create_hybrid_retriever(
     vectorstore=None,
     weights: Optional[List[float]] = None,
 ) -> BaseRetriever:
-    """Create hybrid BM25 + dense retriever."""
     if weights is None:
         weights = HYBRID_WEIGHTS
     if vectorstore is None:
@@ -67,12 +67,22 @@ def create_hybrid_retriever(
     )
 
 
+def filter_by_sources(
+    documents: List[Document],
+    allowed_sources: Optional[List[str]] = None,
+) -> List[Document]:
+    """Filter documents by source filename metadata."""
+    if not allowed_sources:
+        return documents
+    allowed = set(allowed_sources)
+    return [d for d in documents if d.metadata.get("source") in allowed]
+
+
 def rerank_documents(
     query: str,
     documents: List[Document],
     top_k: int = TOP_K,
 ) -> List[Tuple[Document, float]]:
-    """Rerank documents with a cross-encoder and return (doc, score) pairs."""
     if not documents:
         return []
 
@@ -83,11 +93,7 @@ def rerank_documents(
     pairs = [(query, doc.page_content) for doc in documents]
     scores = model.predict(pairs)
 
-    ranked = sorted(
-        zip(documents, scores),
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
     return ranked[:top_k]
 
 
@@ -96,11 +102,9 @@ def retrieve_and_rerank(
     query: str,
     top_k: int = TOP_K,
     candidate_k: int = RERANK_CANDIDATES,
+    source_filter: Optional[List[str]] = None,
 ) -> List[Tuple[Document, float]]:
-    """Full retrieval pipeline: hybrid retrieve → cross-encoder rerank.
-
-    Returns list of (Document, relevance_score).
-    """
-    # Get a wider set of candidates from hybrid search
+    """Hybrid retrieve → optional source filter → cross-encoder rerank."""
     candidates = retriever.invoke(query)[:candidate_k]
+    candidates = filter_by_sources(candidates, source_filter)
     return rerank_documents(query, candidates, top_k=top_k)
