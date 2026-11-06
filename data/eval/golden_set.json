@@ -1,0 +1,32 @@
+[
+  {
+    "question": "What is the remote work policy?",
+    "expected_sources": ["company_handbook.txt"],
+    "expected_answer_contains": ["3 days", "remote", "hybrid"]
+  },
+  {
+    "question": "How many days of paid vacation do full-time employees receive?",
+    "expected_sources": ["company_handbook.txt"],
+    "expected_answer_contains": ["20 days", "vacation"]
+  },
+  {
+    "question": "What parental leave is offered to primary caregivers?",
+    "expected_sources": ["company_handbook.txt"],
+    "expected_answer_contains": ["16 weeks", "parental"]
+  },
+  {
+    "question": "What are the pricing tiers for Acme Cloud Platform?",
+    "expected_sources": ["product_overview.txt"],
+    "expected_answer_contains": ["Starter", "Pro", "Enterprise"]
+  },
+  {
+    "question": "How does the cost insights feature work?",
+    "expected_sources": ["product_overview.txt"],
+    "expected_answer_contains": ["spend", "rightsizing", "cost"]
+  },
+  {
+    "question": "What is the code of conduct?",
+    "expected_sources": ["company_handbook.txt"],
+    "expected_answer_contains": ["respect", "confidential", "ethics"]
+  }
+]

@@ -1,16 +1,25 @@
-"""InsightRAG — Streamlit UI with Hybrid Search"""
+"""InsightRAG — Streamlit UI
+
+Tier-1 features:
+- Hybrid search (BM25 + Dense)
+- Cross-encoder reranking
+- Streaming answers
+- Rich source display (snippets)
+- Document management
+"""
 
 import os
 from pathlib import Path
+from collections import defaultdict
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS
+from src.config import SAMPLE_DIR, UPLOAD_DIR, TOP_K, HYBRID_WEIGHTS, USE_RERANKER
 from src.document_loader import load_and_chunk
 from src.vectorstore import get_vectorstore, add_documents, clear_vectorstore
-from src.retriever import create_hybrid_retriever, retrieve_with_scores
-from src.rag_chain import get_llm, create_rag_chain, answer_question
+from src.retriever import create_hybrid_retriever, retrieve_and_rerank
+from src.rag_chain import get_llm, create_rag_chain, stream_answer
 from src.evaluator import check_groundedness
 
 load_dotenv()
@@ -22,9 +31,11 @@ st.set_page_config(
 )
 
 st.title("💡 InsightRAG")
-st.caption("Intelligent Document Q&A · Hybrid Retrieval (BM25 + Dense Vectors)")
+st.caption("Hybrid Retrieval + Cross-Encoder Reranking · Streaming Answers")
 
+# --------------------------------------------------------------------------
 # Sidebar
+# --------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
 
@@ -44,10 +55,12 @@ with st.sidebar:
         )
 
     st.divider()
-    st.subheader("Retrieval")
+    st.subheader("Retrieval Pipeline")
     st.markdown(
-        f"**Mode:** Hybrid (BM25 + Dense)  \n"
-        f"Weights → BM25: `{HYBRID_WEIGHTS[0]}` · Dense: `{HYBRID_WEIGHTS[1]}`"
+        f"""
+- **Hybrid**: BM25 + Dense (weights {HYBRID_WEIGHTS[0]} / {HYBRID_WEIGHTS[1]})
+- **Reranker**: `{'Enabled' if USE_RERANKER else 'Disabled'}` (Cross-Encoder)
+        """
     )
 
     st.divider()
@@ -65,16 +78,28 @@ with st.sidebar:
     with col1:
         process_btn = st.button("Process Documents", type="primary", use_container_width=True)
     with col2:
-        clear_btn = st.button("Clear Index", use_container_width=True)
+        clear_btn = st.button("Clear All", use_container_width=True)
 
     if clear_btn:
         clear_vectorstore()
-        for key in ["vectorstore", "retriever", "chunks", "messages"]:
+        for key in ["vectorstore", "retriever", "chunks", "doc_stats", "messages"]:
             st.session_state.pop(key, None)
         st.success("Index cleared.")
         st.rerun()
 
+    # Document management panel
+    if "doc_stats" in st.session_state and st.session_state["doc_stats"]:
+        st.divider()
+        st.subheader("Indexed Documents")
+        total_chunks = 0
+        for name, count in st.session_state["doc_stats"].items():
+            st.markdown(f"- `{name}` — **{count}** chunks")
+            total_chunks += count
+        st.caption(f"Total chunks: {total_chunks}")
+
+# --------------------------------------------------------------------------
 # Process documents
+# --------------------------------------------------------------------------
 if process_btn:
     file_paths = []
 
@@ -98,22 +123,30 @@ if process_btn:
             vectorstore = get_vectorstore()
             add_documents(vectorstore, chunks)
 
-            # Build hybrid retriever (BM25 needs the documents in memory)
             hybrid_retriever = create_hybrid_retriever(
                 documents=chunks,
                 vectorstore=vectorstore,
             )
 
+            # Build document statistics
+            stats = defaultdict(int)
+            for c in chunks:
+                stats[c.metadata.get("source", "unknown")] += 1
+
             st.session_state["vectorstore"] = vectorstore
             st.session_state["chunks"] = chunks
             st.session_state["retriever"] = hybrid_retriever
+            st.session_state["doc_stats"] = dict(stats)
 
             st.success(
-                f"Ready — {len(chunks)} chunks from {len(file_paths)} file(s). "
-                f"Hybrid search enabled."
+                f"Ready — {len(chunks)} chunks from {len(stats)} document(s). "
+                f"Hybrid + Reranker enabled."
             )
+            st.rerun()
 
-# Chat history
+# --------------------------------------------------------------------------
+# Chat interface
+# --------------------------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -121,9 +154,11 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("sources"):
-            with st.expander("Sources"):
-                for s in msg["sources"]:
-                    st.markdown(f"- `{s}`")
+            with st.expander("Sources & Snippets"):
+                for src in msg["sources"]:
+                    st.markdown(f"**{src['name']}** (score: {src.get('score', 0):.3f})")
+                    st.markdown(f"> {src['snippet']}")
+                    st.markdown("---")
 
 # Chat input
 if prompt := st.chat_input("Ask a question about your documents..."):
@@ -137,42 +172,65 @@ if prompt := st.chat_input("Ask a question about your documents..."):
             st.warning("Please process some documents first using the sidebar.")
     else:
         with st.chat_message("assistant"):
-            with st.spinner("Retrieving (hybrid) + generating answer..."):
-                try:
-                    llm = get_llm(provider=provider, openai_api_key=openai_key or None)
-                    chain = create_rag_chain(st.session_state["retriever"], llm)
-
-                    # Retrieve docs (for sources + evaluation)
-                    docs = retrieve_with_scores(
-                        st.session_state["retriever"], prompt, k=TOP_K
+            try:
+                # 1. Retrieve + Rerank
+                with st.spinner("Retrieving & reranking..."):
+                    ranked = retrieve_and_rerank(
+                        st.session_state["retriever"],
+                        prompt,
+                        top_k=TOP_K,
                     )
-                    answer = answer_question(chain, prompt)
+                    docs = [doc for doc, score in ranked]
+                    scores = [score for doc, score in ranked]
 
-                    st.markdown(answer)
+                # 2. Stream the answer
+                llm = get_llm(provider=provider, openai_api_key=openai_key or None)
+                chain = create_rag_chain(llm)
 
-                    sources = list({d.metadata.get("source", "unknown") for d in docs})
-                    if sources:
-                        with st.expander("Sources"):
-                            for s in sources:
-                                st.markdown(f"- `{s}`")
+                response_placeholder = st.empty()
+                full_answer = ""
 
-                    grounded = check_groundedness(answer, docs)
-                    st.caption(
-                        f"Retrieval: Hybrid (BM25 + Dense) · "
-                        f"Groundedness: {grounded['score']} · "
-                        f"{'Looks grounded' if grounded['is_grounded'] else 'May be weakly grounded'}"
-                    )
+                for chunk in stream_answer(chain, prompt, docs):
+                    full_answer += chunk
+                    response_placeholder.markdown(full_answer + "▌")
 
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": answer,
-                            "sources": sources,
-                        }
-                    )
-                except Exception as e:
-                    st.error(
-                        f"Error: {e}\n\n"
-                        "If using Ollama, make sure it is running (`ollama serve`) "
-                        "and the model is pulled (`ollama pull llama3.2`)."
-                    )
+                response_placeholder.markdown(full_answer)
+
+                # 3. Rich source display
+                sources_for_ui = []
+                if docs:
+                    with st.expander("Sources & Snippets", expanded=False):
+                        for doc, score in zip(docs, scores):
+                            name = doc.metadata.get("source", "unknown")
+                            snippet = doc.page_content.strip().replace("\n", " ")
+                            if len(snippet) > 280:
+                                snippet = snippet[:280] + "..."
+                            st.markdown(f"**{name}** · relevance: `{score:.3f}`")
+                            st.markdown(f"> {snippet}")
+                            st.markdown("---")
+                            sources_for_ui.append(
+                                {"name": name, "snippet": snippet, "score": float(score)}
+                            )
+
+                # 4. Groundedness indicator
+                grounded = check_groundedness(full_answer, docs)
+                st.caption(
+                    f"Pipeline: Hybrid → Reranker · "
+                    f"Groundedness: {grounded['score']} · "
+                    f"{'Looks grounded' if grounded['is_grounded'] else 'May be weakly grounded'}"
+                )
+
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": full_answer,
+                        "sources": sources_for_ui,
+                    }
+                )
+
+            except Exception as e:
+                st.error(
+                    f"Error: {e}\n\n"
+                    "If using Ollama, make sure it is running (`ollama serve`) "
+                    "and the model is pulled (`ollama pull llama3.2`)."
+                )

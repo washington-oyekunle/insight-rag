@@ -1,67 +1,91 @@
 # InsightRAG 💡
 
-**Intelligent Document Q&A with Hybrid Retrieval (BM25 + Dense Vectors)**
+**Production-style Document Q&A with Hybrid Retrieval + Cross-Encoder Reranking**
 
-A clean, modular, production-style RAG system built as a strong portfolio project for AI / ML / LLM Engineer roles.
+A high-quality RAG system built as a strong portfolio project for AI / ML / LLM Engineer roles.
 
-Upload documents → Ask natural language questions → Get grounded answers with source citations.
-
-> Now features **Hybrid Search**: combines classic keyword search (BM25) with semantic vector search for significantly better retrieval quality.
+Upload documents → Ask natural language questions → Get grounded, streamed answers with source snippets and relevance scores.
 
 ---
 
-## Why This Project Helps You Get Hired
+## Key Features (Tier-1)
 
-Hiring managers for Applied AI roles look for more than notebooks. This project demonstrates:
-
-| Skill | How it's shown |
-|-------|----------------|
-| **Hybrid Retrieval** | BM25 (sparse) + Dense embeddings fused via EnsembleRetriever |
-| **RAG Architecture** | Full pipeline: load → chunk → embed → retrieve → generate |
-| **Vector Databases** | Persistent ChromaDB |
-| **Embeddings** | Local `sentence-transformers/all-MiniLM-L6-v2` |
-| **LLM Integration** | Ollama (local/free) + OpenAI support |
-| **Evaluation Mindset** | Groundedness heuristics + clear extension path to RAGAS |
-| **Software Design** | Modular `src/`, config-driven, clean separation of concerns |
-| **Product Sense** | Working Streamlit chat UI with sources |
+| Feature | Description |
+|---------|-------------|
+| **Hybrid Search** | BM25 (keyword) + Dense vectors fused with Reciprocal Rank Fusion |
+| **Cross-Encoder Reranker** | `ms-marco-MiniLM-L-6-v2` reranks candidates for higher precision |
+| **Streaming Answers** | Token-by-token response for a modern UX |
+| **Rich Sources** | Shows filename, relevance score, and text snippet |
+| **Document Management** | See indexed files and chunk counts in the sidebar |
+| **Evaluation Suite** | Golden set + retrieval hit rate + groundedness metrics |
 
 ---
 
 ## Architecture
 
 ```
-Documents (PDF / TXT)
-        ↓
-   Load + Chunk (RecursiveCharacterTextSplitter)
-        ↓
-   ┌──────────────────┐
-   │                     │
- BM25 Index          Dense Embeddings
- (keyword)           (all-MiniLM-L6-v2)
-   │                     │
-   └──────────────────┘
-                ↓
-     EnsembleRetriever (Reciprocal Rank Fusion)
-                ↓
-     Top-k relevant chunks + sources
-                ↓
-     Prompt + Context → LLM → Answer
+Documents
+    ↓
+Load + Chunk
+    ↓
+┌──────────────────┐
+│                     │
+BM25 Index          Dense Vectors (Chroma)
+│                     │
+└──────────────────┘
+            ↓
+  EnsembleRetriever (RRF)
+            ↓
+  Cross-Encoder Reranker
+            ↓
+  Top-k chunks + scores
+            ↓
+  Streaming LLM Generation
+            ↓
+  Answer + Source Snippets
 ```
-
-**Why Hybrid Search?**  
-Pure vector search can miss exact keywords or rare terms. BM25 is excellent at keyword matching. Combining both (with learned or tuned weights) produces more robust retrieval — a technique used in many production RAG systems.
 
 ---
 
-## Tech Stack
+## Why This Project Stands Out
 
-- **Orchestration**: LangChain
-- **Sparse Retrieval**: BM25 (`rank_bm25`)
-- **Dense Retrieval**: ChromaDB + sentence-transformers
-- **Fusion**: LangChain `EnsembleRetriever`
-- **LLM**: Ollama (recommended) or OpenAI
-- **UI**: Streamlit
-- **Document Loaders**: pypdf + text
+Most portfolio RAG projects stop at basic vector search. This one demonstrates techniques used in real production systems:
+
+- Hybrid retrieval (sparse + dense)
+- Learned reranking
+- Streaming generation
+- Evaluation with a golden set
+- Clean modular architecture
+
+These are exactly the topics that come up in Applied AI / LLM Engineer interviews.
+
+---
+
+## Quick Start
+
+```bash
+git clone https://github.com/washington-oyekunle/insight-rag.git
+cd insight-rag
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Recommended: local LLM
+ollama pull llama3.2
+
+streamlit run app.py
+```
+
+### Run the evaluation suite
+
+```bash
+python -m scripts.run_evaluation
+```
+
+This runs the system against a golden question set and reports:
+- Retrieval hit rate
+- Groundedness rate
+- Per-question diagnostics
 
 ---
 
@@ -69,131 +93,74 @@ Pure vector search can miss exact keywords or rare terms. BM25 is excellent at k
 
 ```
 insight-rag/
-├── app.py                  # Streamlit UI
+├── app.py                     # Streamlit UI (streaming + sources + doc management)
 ├── requirements.txt
-├── .gitignore
-├── .env.example
+├── scripts/
+│   └── run_evaluation.py     # Golden-set evaluation runner
 ├── src/
-│   ├── config.py           # All configuration in one place
-│   ├── document_loader.py  # Load + chunk
-│   ├── embeddings.py       # Embedding model
-│   ├── vectorstore.py      # Chroma operations
-│   ├── retriever.py        # Hybrid (BM25 + Dense) retriever
-│   ├── rag_chain.py        # Prompt + generation chain
-│   └── evaluator.py        # Lightweight groundedness checks
+│   ├── config.py
+│   ├── document_loader.py
+│   ├── embeddings.py
+│   ├── vectorstore.py
+│   ├── retriever.py          # Hybrid + Reranker
+│   ├── rag_chain.py           # Prompting + streaming
+│   └── evaluator.py
 └── data/
-    └── sample/             # Ready-to-use demo documents
+    ├── sample/                # Demo documents
+    └── eval/
+        └── golden_set.json    # Evaluation questions
 ```
-
----
-
-## Quick Start
-
-### 1. Clone & Install
-
-```bash
-git clone https://github.com/washington-oyekunle/insight-rag.git
-cd insight-rag
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### 2. Choose LLM backend
-
-**Option A — Fully local (Recommended)**
-
-```bash
-# Install Ollama from https://ollama.com
-ollama pull llama3.2               # or mistral / phi3 / gemma2
-```
-
-**Option B — OpenAI**
-
-```bash
-cp .env.example .env
-# Add OPENAI_API_KEY=sk-...
-```
-
-### 3. Run
-
-```bash
-streamlit run app.py
-```
-
-Load the sample documents (or upload your own) and start asking questions.
-
----
-
-## Sample Questions
-
-With the included company handbook + product overview:
-
-- "What is the remote work policy?"
-- "How many days of PTO do employees get?"
-- "What parental leave is offered?"
-- "Summarize the code of conduct"
-- "What are the pricing tiers for Acme Cloud Platform?"
-- "How does the cost insights feature work?"
 
 ---
 
 ## Configuration
 
-All important knobs live in `src/config.py`:
+All important settings live in `src/config.py`:
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 800 / 150 | Text splitting |
-| `TOP_K` | 4 | Final docs returned |
-| `DENSE_K` / `BM25_K` | 6 / 6 | Candidates from each retriever |
-| `HYBRID_WEIGHTS` | [0.4, 0.6] | BM25 vs Dense influence |
-| `EMBEDDING_MODEL` | all-MiniLM-L6-v2 | Local embedding model |
-| `OLLAMA_MODEL` | llama3.2 | Local LLM |
-
-Tune the hybrid weights depending on your data: increase BM25 weight for keyword-heavy domains (legal, technical docs), increase dense weight for more semantic / conversational queries.
+| `HYBRID_WEIGHTS` | `[0.4, 0.6]` | BM25 vs Dense influence |
+| `RERANKER_MODEL` | `ms-marco-MiniLM-L-6-v2` | Cross-encoder model |
+| `USE_RERANKER` | `True` | Toggle reranking |
+| `TOP_K` | `4` | Final documents after rerank |
+| `RERANK_CANDIDATES` | `12` | Candidates fed to reranker |
+| `CHUNK_SIZE` | `800` | Chunk size |
 
 ---
 
-## Evaluation
+## Sample Questions
 
-A lightweight groundedness heuristic is included (`src/evaluator.py`).  
-For interview discussions or real projects, mention the natural next steps:
-
-- RAGAS (faithfulness, answer relevancy, context precision/recall)
-- Golden question set with human labels
-- LLM-as-judge evaluation
+- "What is the remote work policy?"
+- "How many days of PTO do employees get?"
+- "What parental leave is offered?"
+- "What are the pricing tiers for Acme Cloud Platform?"
+- "How does the cost insights feature work?"
 
 ---
 
-## Strong Talking Points for Interviews
+## Interview Talking Points
 
 **Problem**  
-Employees and customers waste time searching internal documents. General LLMs hallucinate or give outdated answers.
+Internal knowledge is trapped in documents. Generic LLMs hallucinate or lack access.
 
 **Solution**  
-RAG grounds generation in actual documents and provides citations. Hybrid retrieval improves recall on both keyword and semantic queries.
+A hybrid RAG pipeline with reranking that returns grounded answers + evidence.
 
-**Key Design Decisions**
-- Local embeddings → zero cost + privacy
-- Persistent Chroma → index survives restarts
-- Hybrid (BM25 + dense) → more robust than pure vector search
-- Modular code → easy to swap components or add rerankers later
+**Key decisions**
+- Hybrid retrieval improves recall on both keyword and semantic queries
+- Cross-encoder reranking significantly boosts precision of the final context
+- Streaming + source snippets create a trustworthy user experience
+- Golden-set evaluation shows commitment to measuring quality
 
-**Natural Extensions** (great to discuss)
-1. Cross-encoder / Cohere / BGE reranker on top of hybrid results
-2. Metadata filtering (department, date, document type)
-3. Agentic / multi-step retrieval
-4. Full evaluation suite with RAGAS
-5. FastAPI + Docker deployment
-6. Observability (LangSmith, Phoenix, or custom tracing)
+**Natural next steps** (great to discuss)
+1. Metadata filtering & access control
+2. Agentic / multi-step retrieval
+3. Full RAGAS evaluation suite
+4. FastAPI + Docker deployment
+5. Observability (latency, retrieval logs, feedback loops)
 
 ---
 
 ## License
 
 MIT
-
----
-
-Built as a portfolio project to demonstrate practical AI engineering skills that employers actually care about.
