@@ -1,0 +1,42 @@
+ACME CLOUD PLATFORM — PRODUCT OVERVIEW
+
+Product Name: Acme Cloud Platform (ACP)
+Category: Enterprise SaaS — Infrastructure & Observability
+
+Overview
+Acme Cloud Platform helps engineering teams monitor, debug, and optimize cloud-native applications. It provides unified metrics, logs, and traces in a single interface.
+
+Key Features
+1. Unified Observability
+   - Metrics, logs, and distributed traces in one place
+   - Automatic service dependency mapping
+
+2. Intelligent Alerting
+   - Anomaly detection powered by machine learning
+   - Reduced alert noise through smart grouping
+
+3. Cost Insights
+   - Cloud spend visibility by team, service, and environment
+   - Recommendations for rightsizing resources
+
+4. Collaboration
+   - Shared dashboards and investigation notebooks
+   - Slack and Microsoft Teams integrations
+
+Pricing Tiers (as of 2025)
+- Starter: Free for up to 5 hosts
+- Pro: $25 per host / month
+- Enterprise: Custom pricing with SSO, audit logs, and dedicated support
+
+Supported Environments
+- Kubernetes, AWS, GCP, Azure
+- Popular languages and frameworks via OpenTelemetry
+
+Getting Started
+1. Create an account at cloud.acmecorp.example
+2. Install the lightweight agent or use the OpenTelemetry collector
+3. Data appears in the UI within minutes
+
+Support
+Documentation: docs.acmecorp.example
+Support email: support@acmecorp.example
